@@ -1,6 +1,6 @@
 # MIRROR: Modular Internal Reasoning, Reflection, Orchestration, and Response
 
-This repository is the official implementation of **MIRROR: Modular Internal Reasoning, Reflection, Orchestration, and Response**.
+This repository is the official implementation of **[MIRROR: Cognitive Inner Monologue Between Conversational Turns for Persistent Reflection and Reasoning in Conversational LLMs](https://arxiv.org/abs/2506.00430)**
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
