@@ -29,28 +29,26 @@ import re
 import pandas as pd
 from datetime import datetime
 import time
-from openai import OpenAI 
+from openai import OpenAI
 from anthropic import Anthropic
-import replicate 
+import replicate
 import google.generativeai as genai
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from scipy import stats
 import random
-import sys # Added for sys.path
-import argparse # Import argparse
-import concurrent.futures # Added for parallel processing
-import threading # Added for thread-safe operations
+import sys  # Added for sys.path
+import argparse  # Import argparse
+import concurrent.futures  # Added for parallel processing
+import threading  # Added for thread-safe operations
 
-# --- Add project root to path for mirror imports ---
+# Provider registry for pipeline and model providers
 try:
-    from mirror_provider import MirrorProvider
+    from providers import AVAILABLE_PROVIDERS, PIPELINE_PROVIDERS
 except ImportError as e:
-    print(f"Error importing mirror modules: {e}")
-    print(f"Ensure the script is run from the correct directory or adjust the path.")
+    print(f"Error importing providers: {e}")
     sys.exit(1)
-# --- End mirror imports ---
 
 # ensure API keys/tokens are set
 openai_api_key = os.environ.get("OPENAI_API_KEY", None)
@@ -424,37 +422,16 @@ def process_conversation(model_identifier, row, provider_or_model_obj):
 
                 # --- Updated Model Calling Logic ---
                 model_response = ""
-                if model_identifier == "mirror":
-                    # Assumes provider_or_model_obj is the initialized MirrorProvider
+                if hasattr(provider_or_model_obj, "generate_response"):
                     try:
-                        # mirror provider expects only the latest user input
-                        # And manages history internally. Need to adapt.
-                        # For this script structure, we might need to pass the full history 
-                        # or reset the provider per conversation.
-                        # Let's pass the full history for now.
-                        
-                        # Re-construct history for mirror format if needed by the provider wrapper
-                        mirror_history = conversation[:-1] # History *before* the latest user message
-                        
-                        # Check if this is the first actual interaction turn for mirror
-                        # The provider might need reset/initialization logic per conversation.
-                        # This might need refinement based on MirrorProvider's state management.
-                        is_new_conv_for_mirror = (len(mirror_history) == 0)
-                        if is_new_conv_for_mirror:
-                             provider_or_model_obj.mirror.reset_conversation()
-                        
-                        # Call the provider (which wraps the mirror agent)
                         model_response = provider_or_model_obj.generate_response(conversation)
                     except Exception as e:
-                        print(f"Error calling MirrorProvider: {e}")
+                        print(f"Error calling provider for {model_identifier}: {e}")
                         model_response = ""
                 elif model_identifier.startswith("openrouter/"):
-                    # Assumes provider_or_model_obj is None or not needed here
-                    # Extract the actual model name for OpenRouter API
                     openrouter_model_name = model_identifier.split("/", 1)[1]
                     model_response = get_openrouter_response(conversation, openrouter_model_name)
                 elif model_identifier in ["gpt-3.5-turbo", "gpt-4o", "o1-preview"]:
-                    # Assumes provider_or_model_obj is the OpenAI client
                     model_response = get_gpt_response(conversation, model_identifier)
                 elif model_identifier in ["gemini-1.5-flash", "gemini-1.5-pro"]:
                     # Assumes provider_or_model_obj is the specific Gemini model object
@@ -616,7 +593,10 @@ def create_visualizations(results_df, results_dir='', model_prefix=''):
         print(f"Warning: Visualization creation failed: {e}")
         print("Continuing with result saving...")
 
-def run_benchmark(mirror_internal_model_arg, parallel=False, max_workers=None, single_scenario=None, results_dir='', model_prefix='', max_examples=None):
+def run_benchmark(providers_to_use, mirror_internal_model_arg=None, baseline_model_arg=None,
+                  parallel=False, max_workers=None, single_scenario=None,
+                  results_dir='', model_prefix='', max_examples=None):
+    """Run the benchmark for the specified providers."""
     input_data = pd.read_excel('inputs.xlsx')
 
     # Thread-safe lists for storing results
@@ -625,45 +605,28 @@ def run_benchmark(mirror_internal_model_arg, parallel=False, max_workers=None, s
     binary_results = []
     neutral_results = []
     
-    # Get the model to use from the argument
-    if model_prefix.startswith("mirror-"):
-        # If this is a MIRROR run, use the mirror model
-        models = ["mirror"]
-        print(f"Using MIRROR architecture with internal model: {mirror_internal_model_arg}")
-    else:
-        # Otherwise use the model passed as mirror_internal_model_arg (which serves as the model identifier for any run)
-        models = [mirror_internal_model_arg]
-        print(f"Using model: {mirror_internal_model_arg}")
-    
-    # Display mirror variant being used if applicable
+    # Determine which providers to run
+    models = [p.strip() for p in providers_to_use]
+    print(f"Running benchmark for providers: {', '.join(models)}")
+
     if "mirror" in models:
-        mirror_variant = "standard"
-        print(f"Using {mirror_variant} MIRROR variant")
+        print(f"Using MIRROR architecture with internal model: {mirror_internal_model_arg}")
 
     # --- Initialize clients/providers outside the loop ---
     providers = {}
     try:
-        # Condition OpenAI client init on its own key
-        if openai_api_key:
-            providers["openai_client"] = OpenAI(api_key=openai_api_key) # Pass key explicitly too
         if google_api_key:
             providers["gemini_flash"] = genai.GenerativeModel('gemini-1.5-flash')
             providers["gemini_pro"] = genai.GenerativeModel('gemini-1.5-pro')
-            
-        # Anthropic client is initialized globally
-        # Replicate client (for llama/mistral) is used directly in functions
-        # OpenRouter client is initialized in its helper function
-        
-        # Initialize MirrorProvider if needed
-        if "mirror" in models:
-            # Use the mirror_internal_model_arg as the model for MIRROR
-            mirror_internal_model = mirror_internal_model_arg
 
-            # Using standard mirror variant
-            providers["mirror_provider"] = MirrorProvider(
-                api_key=openrouter_api_key, 
-                model=mirror_internal_model
-            )
+        # Instantiate provider objects based on registry
+        for prov_key in models:
+            if prov_key in AVAILABLE_PROVIDERS:
+                prov_cls = AVAILABLE_PROVIDERS[prov_key]
+                if prov_key in PIPELINE_PROVIDERS:
+                    providers[prov_key] = prov_cls(api_key=openrouter_api_key, model=mirror_internal_model_arg)
+                else:
+                    providers[prov_key] = prov_cls(model=baseline_model_arg)
 
     except Exception as e:
         print(f"Error initializing models/providers: {e}")
@@ -678,12 +641,9 @@ def run_benchmark(mirror_internal_model_arg, parallel=False, max_workers=None, s
             # Create a separate mirror instance for each conversation if needed
             local_provider = provider_or_model_obj
             if model_identifier == "mirror":
-                # Create a fresh mirror instance for this conversation to avoid shared state
-
-
-                # Create standard mirror provider instance
-                local_provider = MirrorProvider(
-                    api_key=openrouter_api_key, 
+                # Create a fresh mirror instance for this conversation
+                local_provider = AVAILABLE_PROVIDERS["mirror"](
+                    api_key=openrouter_api_key,
                     model=mirror_internal_model_arg
                 )
             
@@ -943,19 +903,16 @@ def run_benchmark(mirror_internal_model_arg, parallel=False, max_workers=None, s
         """Process a single model - refactored for parallel execution"""
         try:
             # --- Get the correct provider/client for the model ---
-            provider_or_model_obj = None
-            if model_identifier == "mirror":
-                provider_or_model_obj = providers.get("mirror_provider")
-                if not provider_or_model_obj:
-                     print(f"Skipping {model_identifier}: Provider not initialized.")
-                     return [], []
-            elif model_identifier in ["gpt-3.5-turbo", "gpt-4o", "o1-preview"]:
-                provider_or_model_obj = providers.get("openai_client")
-            elif model_identifier == "gemini-1.5-flash":
-                provider_or_model_obj = providers.get("gemini_flash")
-            elif model_identifier == "gemini-1.5-pro":
-                provider_or_model_obj = providers.get("gemini_pro")
-            # Other models (OpenRouter, Replicate, Claude) handle client internally or globally
+            provider_or_model_obj = providers.get(model_identifier)
+            if provider_or_model_obj is None:
+                if model_identifier == "gemini-1.5-flash":
+                    provider_or_model_obj = providers.get("gemini_flash")
+                elif model_identifier == "gemini-1.5-pro":
+                    provider_or_model_obj = providers.get("gemini_pro")
+
+            if provider_or_model_obj is None:
+                print(f"Skipping {model_identifier}: Provider not initialized.")
+                return [], []
             # --- End Provider/Client Selection ---
             
             print(f"\n===== Processing Model: {model_identifier} =====")
@@ -1051,10 +1008,22 @@ if __name__ == "__main__":
     # --- Add Argument Parsing ---
     parser = argparse.ArgumentParser(description="Run LLM Pragmatic Harms Eval Benchmark")
     parser.add_argument(
+        '--providers',
+        type=str,
+        default='mirror,openai',
+        help='Comma-separated list of provider keys to evaluate'
+    )
+    parser.add_argument(
         '--mirror-model',
         type=str,
         default="openai/gpt-4o",
         help='Model identifier for Mirror\'s internal LLM (usually an OpenRouter model).'
+    )
+    parser.add_argument(
+        '--baseline-model',
+        type=str,
+        default='gpt-4o',
+        help='Model identifier for baseline model providers'
     )
     parser.add_argument(
         '--parallel',
@@ -1095,7 +1064,9 @@ if __name__ == "__main__":
 
     # Pass args to run_benchmark
     run_benchmark(
+        providers_to_use=[p.strip() for p in args.providers.split(',') if p.strip()],
         mirror_internal_model_arg=args.mirror_model,
+        baseline_model_arg=args.baseline_model,
         parallel=args.parallel,
         max_workers=args.workers,
         single_scenario=args.scenario,

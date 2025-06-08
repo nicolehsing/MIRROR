@@ -1,6 +1,7 @@
 import os
 import sys
 from typing import List, Dict, Any, Tuple, Union, Optional
+from .providers.base import PipelineProvider
 
 # Add parent directory to Python path so core module can be found
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -8,11 +9,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Use absolute import from the mirror package
 from core.components.mirror import Mirror
 
-class MirrorProvider:
-    """
-    Model provider implementation for the mirror architecture.
-    This class adapts the mirror architecture to work with the multichallenge benchmark.
-    """
+class MirrorProvider(PipelineProvider):
+    """Pipeline provider using the full MIRROR architecture."""
     
     def __init__(self, api_key=None, model=None, temp=0.7, **kwargs):
         """
@@ -37,7 +35,22 @@ class MirrorProvider:
         
         # Track if background thinking has been processed
         self.is_first_turn = True
-    
+
+    def generate_immediate_response(self, conversation: List[Dict[str, str]]) -> str:
+        """Generate a reply using Mirror.process_user_input."""
+        response_data = self.generate_response_with_metadata(conversation)
+        if isinstance(response_data, tuple):
+            return response_data[0]
+        return response_data
+
+    def run_background_processor(self, conversation: List[Dict[str, str]]) -> None:
+        """Background processing runs automatically inside Mirror."""
+        # Mirror starts its own background thread in process_user_input
+        pass
+
+    def generate_response(self, conversation: List[Dict[str, str]]) -> str:
+        return self.generate_immediate_response(conversation)
+
     def generate(self, conversation: List[Dict[str, str]]) -> str:
         """
         Generate a response for the given conversation history.
@@ -51,22 +64,6 @@ class MirrorProvider:
             The model's response
         """
         return self.generate_response(conversation)
-    
-    def generate_response(self, conversation: List[Dict[str, str]]) -> str:
-        """
-        Generate a response for the given conversation history.
-        
-        Args:
-            conversation: A list of message dictionaries with 'role' and 'content'
-            
-        Returns:
-            The model's response
-        """
-        # Get response and metadata but only return the response
-        response_data = self.generate_response_with_metadata(conversation)
-        if isinstance(response_data, tuple):
-            return response_data[0]  # Return just the response string
-        return response_data  # If not a tuple, return as is
     
     def generate_response_with_metadata(self, conversation: List[Dict[str, str]]) -> Union[str, Tuple[str, Optional[float], Optional[bool], Optional[Dict], Optional[str]]]:
         """
