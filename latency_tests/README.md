@@ -337,4 +337,20 @@ pip install openai pandas openpyxl requests
 
 For MIRROR testing, ensure the MIRROR system is running and accessible.
 
-This testing suite provides comprehensive latency evaluation capabilities for comparing MIRROR against various baseline models using realistic conversation scenarios and human behavior simulation. 
+This testing suite provides comprehensive latency evaluation capabilities for comparing MIRROR against various baseline models using realistic conversation scenarios and human behavior simulation.
+
+## Extending Baseline Providers
+
+Latency tests rely on provider classes declared in `llm_prag_benchmark/providers`.
+Two interfaces are available:
+
+- **PipelineProvider** – for systems that embed their own prompting logic (for
+  example `MirrorProvider`, `BaselineMirrorProvider` or `SuperPromptProvider`).
+- **ModelProvider** – for wrappers around a base model that expose only a minimal
+  generate interface.
+
+Implement a subclass of one of these interfaces with a `generate_response()`
+method and register it in `providers/__init__.py`. Large prompt text should live
+under `llm_prag_benchmark/prompts`. Providers are selected at runtime with the
+`--providers` or `--baseline-provider` arguments, so the benchmark code remains
+unchanged when adding new strategies.

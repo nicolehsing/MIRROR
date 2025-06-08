@@ -10,16 +10,17 @@ from typing import List, Dict, Any
 import argparse
 import openai
 from openai import OpenAI
+from llm_prag_benchmark.providers import AVAILABLE_PROVIDERS, PIPELINE_PROVIDERS
 
 class BenchmarkLatencyTester:
-    def __init__(self, 
+    def __init__(self,
                  mirror_endpoint="http://localhost:5555/v1/chat/completions",
-                 baseline_model="gpt-4o", 
-                 num_scenarios=5, 
+                 baseline_model="gpt-4o",
+                 num_scenarios=5,
                  typing_speed_wpm=40,
                  reading_speed_wpm=250,
                  benchmark_file="inputs_80.xlsx",
-                 api_provider="openai"):
+                 baseline_provider="openai"):
         """
         Initialize the enhanced benchmark latency tester with support for both MIRROR and baseline testing.
         
@@ -30,7 +31,7 @@ class BenchmarkLatencyTester:
             typing_speed_wpm: Average human typing speed in words per minute
             reading_speed_wpm: Average human reading speed in words per minute
             benchmark_file: Excel file in llm_prag_benchmark to load scenarios from
-            api_provider: "openai" for OpenAI API, "openrouter" for OpenRouter API
+            baseline_provider: provider key registered in llm_prag_benchmark/providers
         """
         self.mirror_endpoint = mirror_endpoint
         self.baseline_model = baseline_model
@@ -38,8 +39,8 @@ class BenchmarkLatencyTester:
         self.typing_speed_wpm = typing_speed_wpm
         self.reading_speed_wpm = reading_speed_wpm
         self.benchmark_file = benchmark_file
-        self.api_provider = api_provider
-        self.baseline_client = None
+        self.baseline_provider_key = baseline_provider
+        self.baseline_provider = None
         
         # Convert to words per second for easier calculations
         self.typing_speed_wps = typing_speed_wpm / 60.0
@@ -63,29 +64,17 @@ class BenchmarkLatencyTester:
         self.baseline_all_scenario_metrics = []
         
     def setup_baseline(self):
-        """Initialize the baseline API client based on provider."""
-        print(f"Initializing {self.api_provider} client for baseline testing with model: {self.baseline_model}")
-        
-        if self.api_provider == "openrouter":
-            # OpenRouter configuration
-            api_key = os.getenv("OPENROUTER_API_KEY")
-            if not api_key:
-                raise ValueError("OPENROUTER_API_KEY environment variable not set")
-                
-            self.baseline_client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=api_key,
-            )
-            print(f"Using OpenRouter API with model: {self.baseline_model}")
-            
-        else:  # openai
-            # Standard OpenAI configuration
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY environment variable not set")
-                
-            self.baseline_client = OpenAI(api_key=api_key)
-            print(f"Using OpenAI API with model: {self.baseline_model}")
+        """Initialize the baseline provider."""
+        print(f"Initializing baseline provider '{self.baseline_provider_key}' with model: {self.baseline_model}")
+
+        prov_cls = AVAILABLE_PROVIDERS.get(self.baseline_provider_key)
+        if prov_cls is None:
+            raise ValueError(f"Unknown provider: {self.baseline_provider_key}")
+
+        if self.baseline_provider_key in PIPELINE_PROVIDERS:
+            self.baseline_provider = prov_cls(model=self.baseline_model)
+        else:
+            self.baseline_provider = prov_cls(model=self.baseline_model)
     
     def call_mirror(self, prompt, conversation_history=None):
         """Call the MIRROR system through its API."""
@@ -130,41 +119,22 @@ class BenchmarkLatencyTester:
         try:
             # Build messages for the conversation
             messages = []
-            
-            # Add conversation history if provided
+
             if conversation_history:
-                for i, (user_msg, assistant_msg) in enumerate(conversation_history):
+                for user_msg, assistant_msg in conversation_history:
                     messages.append({"role": "user", "content": user_msg})
-                    if assistant_msg:  # Only add assistant message if it exists
+                    if assistant_msg:
                         messages.append({"role": "assistant", "content": assistant_msg})
-            
-            # Add current prompt
+
             messages.append({"role": "user", "content": prompt})
-            
-            # Prepare API call parameters
-            api_params = {
-                "model": self.baseline_model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 1000
-            }
-            
-            # Add OpenRouter-specific headers if using OpenRouter
-            if self.api_provider == "openrouter":
-                # Optional: Add site name for OpenRouter analytics
-                site_name = os.getenv("OPENROUTER_SITE_NAME", "MIRROR-Latency-Test")
-                api_params["extra_headers"] = {
-                    "HTTP-Referer": "https://github.com/your-repo",  # Replace with actual repo
-                    "X-Title": site_name
-                }
-            
-            # Make API call
-            response = self.baseline_client.chat.completions.create(**api_params)
-            
-            return response.choices[0].message.content
+
+            if not self.baseline_provider:
+                raise RuntimeError("Baseline provider not initialized")
+
+            return self.baseline_provider.generate_response(messages)
             
         except Exception as e:
-            print(f"Error calling {self.api_provider} with model {self.baseline_model}: {e}")
+            print(f"Error calling baseline provider {self.baseline_provider_key} with model {self.baseline_model}: {e}")
             return f"Error: {str(e)}"
     
     def calculate_typing_time(self, text, is_first_turn=False):
@@ -498,13 +468,13 @@ class BenchmarkLatencyTester:
         
         # Initialize baseline client if needed
         if test_mode in ["baseline", "both"]:
-            if not self.baseline_client:
+            if not self.baseline_provider:
                 self.setup_baseline()
         
         print(f"\nStarting latency test in mode: {test_mode}")
         print(f"Using benchmark file: {self.benchmark_file}")
         if test_mode in ["baseline", "both"]:
-            print(f"Baseline model: {self.baseline_model} (API: {self.api_provider})")
+            print(f"Baseline model: {self.baseline_model} (provider: {self.baseline_provider_key})")
         print(f"Human typing speed: {self.typing_speed_wpm} WPM ({self.typing_speed_wps:.2f} WPS)")
         print(f"Human reading speed: {self.reading_speed_wpm} WPM ({self.reading_speed_wps:.2f} WPS)")
         print("-" * 80)
@@ -659,7 +629,7 @@ class BenchmarkLatencyTester:
             return
             
         print(f"BASELINE {self.baseline_model.upper()} TEST SUMMARY (Using {self.benchmark_file})")
-        print(f"API Provider: {self.api_provider}")
+        print(f"Provider: {self.baseline_provider_key}")
         print("=" * 80)
         
         # Response time statistics
@@ -678,7 +648,7 @@ class BenchmarkLatencyTester:
             return
             
         print(f"MIRROR vs {self.baseline_model.upper()} COMPARISON SUMMARY (Using {self.benchmark_file})")
-        print(f"Baseline API Provider: {self.api_provider}")
+        print(f"Baseline Provider: {self.baseline_provider_key}")
         print("=" * 80)
         
         # Side-by-side response time comparison
@@ -826,10 +796,10 @@ class BenchmarkLatencyTester:
             filename = f"mirror_{os.path.splitext(self.benchmark_file)[0]}_{timestamp}.json"
             self._save_mirror_results(output_dir, filename, timestamp)
         elif test_mode == "baseline":
-            filename = f"baseline_{self.api_provider}_{model_name}_{os.path.splitext(self.benchmark_file)[0]}_{timestamp}.json"
+            filename = f"baseline_{self.baseline_provider_key}_{model_name}_{os.path.splitext(self.benchmark_file)[0]}_{timestamp}.json"
             self._save_baseline_results(output_dir, filename, timestamp)
         else:  # both
-            filename = f"comparison_mirror_vs_{self.api_provider}_{model_name}_{os.path.splitext(self.benchmark_file)[0]}_{timestamp}.json"
+            filename = f"comparison_mirror_vs_{self.baseline_provider_key}_{model_name}_{os.path.splitext(self.benchmark_file)[0]}_{timestamp}.json"
             self._save_comparison_results(output_dir, filename, timestamp)
     
     def _save_mirror_results(self, output_dir, filename, timestamp):
@@ -882,7 +852,7 @@ class BenchmarkLatencyTester:
         results = {
             "test_config": {
                 "model": self.baseline_model,
-                "api_provider": self.api_provider,
+                "provider": self.baseline_provider_key,
                 "test_mode": "baseline",
                 "num_scenarios": len(self.baseline_all_scenario_metrics),
                 "benchmark_file": self.benchmark_file,
@@ -928,7 +898,7 @@ class BenchmarkLatencyTester:
             "test_config": {
                 "test_mode": "comparison",
                 "baseline_model": self.baseline_model,
-                "api_provider": self.api_provider,
+                "baseline_provider": self.baseline_provider_key,
                 "num_scenarios": len(self.mirror_all_scenario_metrics),
                 "benchmark_file": self.benchmark_file,
                 "typing_speed_wpm": self.typing_speed_wpm,
@@ -1002,18 +972,15 @@ def main():
                         help='Reading speed in words per minute')
     parser.add_argument('--benchmark', type=str, default="inputs_80.xlsx", 
                         help='Benchmark file to use (must be in llm_prag_benchmark directory)')
-    parser.add_argument('--api-provider', type=str, default="openai", choices=["openai", "openrouter"],
-                        help='API provider for baseline: openai for OpenAI API, openrouter for OpenRouter API')
+    parser.add_argument('--baseline-provider', type=str, default="openai",
+                        help='Provider key registered in llm_prag_benchmark/providers')
     args = parser.parse_args()
     
     print(f"Initializing MIRROR Latency Benchmark Test using {args.benchmark}...")
     print(f"Test mode: {args.test_mode}")
     if args.test_mode in ["baseline", "both"]:
-        if args.api_provider == "openrouter":
-            print(f"Using OpenRouter API - make sure OPENROUTER_API_KEY environment variable is set!")
-            print(f"Baseline model: {args.baseline_model}")
-        else:
-            print(f"Using OpenAI API - make sure OPENAI_API_KEY environment variable is set!")
+        print(f"Baseline provider: {args.baseline_provider}")
+        print(f"Baseline model: {args.baseline_model}")
     
     tester = BenchmarkLatencyTester(
         mirror_endpoint=args.mirror_endpoint,
@@ -1022,7 +989,7 @@ def main():
         typing_speed_wpm=args.typing_speed,
         reading_speed_wpm=args.reading_speed,
         benchmark_file=args.benchmark,
-        api_provider=args.api_provider
+        baseline_provider=args.baseline_provider
     )
     
     try:

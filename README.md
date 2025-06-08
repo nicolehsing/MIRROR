@@ -127,7 +127,7 @@ python test_latency_benchmark.py --test-mode both --baseline-model "gpt-4o" --sc
 python test_latency_benchmark.py --test-mode mirror --scenarios 10
 
 # Test baseline model latency with OpenRouter
-python test_baseline_latency.py --model "anthropic/claude-3.5-sonnet" --api-provider openrouter
+python test_baseline_latency.py --model "anthropic/claude-3.5-sonnet" --baseline-provider openrouter
 ```
 
 ### Evaluation Arguments
@@ -143,7 +143,19 @@ python test_baseline_latency.py --model "anthropic/claude-3.5-sonnet" --api-prov
 - `--test-mode`: "mirror", "baseline", or "both"
 - `--baseline-model`: Baseline model for comparison
 - `--scenarios N`: Number of test scenarios
-- `--api-provider`: "openai" or "openrouter"
+- `--baseline-provider`: provider key from `llm_prag_benchmark/providers`
+
+### Provider Interfaces
+
+`llm_prag_benchmark/providers` defines two base classes for extending the
+benchmarks:
+
+- **ModelProvider** – wrap a raw model API with a `generate_response()` method.
+- **PipelineProvider** – implement custom prompting or multi-step pipelines
+  (e.g. `MirrorProvider`, `BaselineMirrorProvider`, `SuperPromptProvider`).
+
+Register your provider in `providers/__init__.py` and select it using the
+`--providers` or `--baseline-provider` argument.
 
 ## Pre-trained Models
 
